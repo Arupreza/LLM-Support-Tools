@@ -2,10 +2,12 @@
 # 1. IMPORTS
 # ==============================================================================
 # Explanation:
-# All necessary imports for the multi-step process are included.
-# We are using `pydantic` for validation, `pydantic_ai` for the first
-# classification step, and `openai` with `instructor` for the tool-calling
-# and final data extraction steps.
+# This section imports the necessary libraries for your multi-stage workflow.
+# - `pydantic`: The foundation for data validation and structuring.
+# - `pydantic_ai`: A high-level library used here for the initial classification step (Stage 1).
+# - `openai`: The official client library for interacting with the OpenAI API.
+# - `instructor`: A library that patches the `openai` client to enforce Pydantic
+#   schemas on the AI's output, crucial for the final structuring step (Stage 3).
 # ==============================================================================
 from pydantic import BaseModel, Field, EmailStr, field_validator
 from pydantic_ai import Agent
@@ -24,7 +26,9 @@ nest_asyncio.apply()
 # 2. FAKE DATABASES
 # ==============================================================================
 # Explanation:
-# No changes here. These mock databases simulate our external data sources.
+# These are mock databases. In a real application, your tools would query a
+# live database or an external API. These dictionaries simulate that
+# environment, allowing your tools to retrieve data and test the logic.
 # ==============================================================================
 faq_db = [
     {
@@ -53,14 +57,24 @@ order_db = {
         "status": "processing", "estimated_delivery": "2025-12-15",
         "purchase_date": "2025-12-10", "email": "sue@example.com"
     },
+    "QWE-34567": {
+        "status": "delivered", "estimated_delivery": "2025-12-20",
+        "purchase_date": "2025-12-18", "email": "bob@example.com"
+    }
 }
 
 # ==============================================================================
 # 3. PYDANTIC MODEL DEFINITIONS
 # ==============================================================================
 # Explanation:
-# Models for initial input, tool arguments, and the final output are defined.
-# This ensures data is structured and validated at every step of the process.
+# These models are the structural backbone of your application. Each class
+# defines a specific data schema.
+# - `UserInput`: Validates the raw input from the user.
+# - `CustomerQuery`: Represents the enriched data after initial AI classification.
+# - `FAQLookupArgs` & `CheckOrderStatusArgs`: Define the exact arguments your
+#   tools require, preventing the AI from calling them with incorrect data.
+# - `SupportTicket`: The final, comprehensive schema that the entire process
+#   aims to produce.
 # ==============================================================================
 class UserInput(BaseModel):
     name: str = Field(..., description="User's name")
@@ -107,8 +121,10 @@ class SupportTicket(CustomerQuery):
 # 4. TOOL IMPLEMENTATIONS
 # ==============================================================================
 # Explanation:
-# These are the Python functions that our AI agent can call. They interact
-# with our fake databases to retrieve information.
+# These functions are the "tools" that the AI can choose to call. They represent
+# the actions your system can take, such as looking up data. The Pydantic
+# argument models (`FAQLookupArgs`, `CheckOrderStatusArgs`) ensure that the AI
+# provides valid input when it decides to use these tools.
 # ==============================================================================
 def lookup_faq_answer(args: FAQLookupArgs) -> str:
     """Look up an FAQ answer by matching tags and words in query to FAQ entry keywords."""
@@ -128,7 +144,7 @@ def check_order_status(args: CheckOrderStatusArgs) -> dict:
     if not order:
         return {"order_id": args.order_id, "status": "not found", "note": "order_id not found"}
     if args.email.lower() != order.get("email", "").lower():
-        return {"order_id": args.order_id, "status": order["status"], "note": "order_id found but email mismatch"}
+        return {"order_id": args.order_id, "status": order["status"], "estimated_delivery": order["estimated_delivery"], "note": "order_id found but email mismatch"}
     return {"order_id": args.order_id, "status": order["status"], "estimated_delivery": order["estimated_delivery"], "note": "order_id and email match"}
 
 available_tools = {"lookup_faq_answer": lookup_faq_answer, "check_order_status": check_order_status}
@@ -137,8 +153,8 @@ available_tools = {"lookup_faq_answer": lookup_faq_answer, "check_order_status":
 # 5. CORE LOGIC (MULTI-STEP WORKFLOW)
 # ==============================================================================
 # Explanation:
-# This section implements your original three-stage workflow. Each function
-# represents a distinct call to the AI for a specific purpose.
+# This section defines the three distinct stages of your AI workflow.
+# Each function performs a specific AI call with a clear objective.
 #===============================================================================
 
 # STAGE 1: Classify the initial user input into a CustomerQuery object.
@@ -187,8 +203,10 @@ def generate_support_ticket(customer_query: CustomerQuery, tool_message, tool_ou
 # 6. EXECUTION
 # ==============================================================================
 # Explanation:
-# This block runs the entire process sequentially, passing the output of each
-# stage as the input to the next.
+# This block is the orchestrator. It runs the entire process sequentially,
+# passing the output of each stage as the input to the next. It handles
+# validating the raw input, executing the three AI stages, and running any
+# tools the AI decides to use.
 # ==============================================================================
 
 # Initialize clients
@@ -197,7 +215,6 @@ instructor_client = instructor.from_openai(openai_client)
 
 # --- Start Workflow ---
 user_input_json = '''
-
 {
     "name": "Joe User",
     "email": "joe@example.com",
@@ -205,7 +222,6 @@ user_input_json = '''
     "order_id": "QWE-34567",
     "purchase_date": null
 }
-
 '''
 validated_input = UserInput.model_validate_json(user_input_json)
 
