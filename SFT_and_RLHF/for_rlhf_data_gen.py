@@ -10,7 +10,8 @@ from pydantic import BaseModel, Field
 # LangChain components for building the generation chain
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import PydanticOutputParser, OutputFixingParser
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain.output_parsers import OutputFixingParser
 
 # --- Load environment variables for API keys ---
 load_dotenv()
@@ -99,4 +100,4 @@ def generate_preference_dataset(output_file: str, num_samples: int = 1000) -> No
 # SECTION 3: SCRIPT EXECUTION
 # =====================================================================================
 if __name__ == "__main__":
-    generate_preference_dataset("langchain_generated_amazon_preferences.json", num_samples=100)
+    generate_preference_dataset("langchain_generated_amazon_preferences.json", num_samples=10)
