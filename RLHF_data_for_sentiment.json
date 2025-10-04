@@ -1,0 +1,52 @@
+[
+    {
+        "review": "All the pretty people in this film. Even the Rudy character played by Michael Madsen. This is adapted from a Jim Thompson novel for cryin' out loud! These are supposed to be marginal characters, not fashion models. Though McQueen and McGraw were attractive (but check out McQueen's crummy prison haircut) they were believable in the role. Baldwin and Bassinger seem like movie stars trying to act like hard cases. Action wise, the robbery scene in the Pekinpah version was about 100 times more exciting and suspenseful than anything in this re-make.",
+        "chosen": "This review expresses mixed sentiment. The reviewer appreciates the authenticity of the characters played by McQueen and McGraw but criticizes Baldwin and Bassinger for appearing too much like movie stars. Additionally, the reviewer finds the action scenes in the original Pekinpah version to be far more exciting and suspenseful than in this remake.",
+        "rejected": "The review is negative because it criticizes the appearance of the characters played by Baldwin and Bassinger."
+    },
+    {
+        "review": "I know that Tom Robbins has a loyal following and I started the book with high expectations. However, I did not enjoy this book as it was too much work to follow his confused logic. I think that he was under the influence during most of time that he wrote.",
+        "chosen": "This is a mixed sentiment review. The reviewer had high expectations but did not enjoy the book due to the confusing logic and the suspicion that the author was under the influence during writing.",
+        "rejected": "The review is negative because it mentions not enjoying the book."
+    },
+    {
+        "review": "This type of spaetzle maker is easier to manuveur than the old press kind and much easier on the hands. The difference is that this new spaetzle maker makes smaller noodles than the old. It is great for us elderly that don't have much strength left.",
+        "chosen": "This is a mixed sentiment review. The reviewer appreciates the ease of use and the reduced strain on the hands with the new spaetzle maker, but also notes that it produces smaller noodles than the old one. The positive aspect for elderly users is highlighted, but the criticism of the smaller noodles is also acknowledged.",
+        "rejected": "The review is positive because it mentions that the new spaetzle maker is easier to use and gentler on the hands."
+    },
+    {
+        "review": "My cats seemed to be amused to work for their food. One cat would roll the ball with her paws and nose, and the other would walk behind her and eat up whatever fell out -- teamwork! I knew they'd dig this ball because I had already made something similar out of a plastic water bottle before that they liked a lot.A few weeks after getting this, though, the ball was never to be found again. I think it may have rolled down into the dark basement at some point and became one with the clutter.+1 for the adjustable hole sizes. -1 for the mess that happens when trying to put the food in by hand (although this could be solved with a funnel).",
+        "chosen": "This is a mixed sentiment review. The reviewer highlighted the amusement of their cats with the food ball, the teamwork between the cats, and the adjustable hole sizes. However, they also mentioned the ball getting lost and the mess that occurs when trying to put the food in by hand.",
+        "rejected": "The review is positive because it mentions the cats being amused and the adjustable hole sizes."
+    },
+    {
+        "review": "I've had no problems running this with my Dell 8200 PC running Windows XP Home Edition which is running an addon USB 2 card, to which this hub (I have the 8 port version) is connected. When I bought it a year ago, I thought that 8 ports would be overkill and that 4 would be adequate, but I bought this unit anyway. Boy was I glad, right now 6 of the 8 are in use.",
+        "chosen": "This review expresses satisfaction with the 8-port USB hub, noting that the initially perceived overkill of 8 ports turned out to be beneficial as 6 of them are currently in use. The reviewer also mentions the specific compatibility with a Dell 8200 PC running Windows XP Home Edition and an addon USB 2 card, providing helpful context for potential buyers.",
+        "rejected": "The review is positive because it mentions being glad about the 8-port USB hub."
+    },
+    {
+        "review": "If you're considering purchasing this movie, I have to figure you're either a huge fan of Sarah Michelle Gellar, or you've seen the movie in the past and really liked it. Either that, or you're like me and you bought it as a gift for someone else, lol (although I did see this in the theater years ago and liked it). So there's not much use in reviewing the movie itself.As for the DVD release...you're not going to get anything in the way of extras (correct me if I'm wrong, but I think there's only a trailer)...but you do get the movie in both widescreen as well as pan and scan. It's of good quality, and it came at a good price (at least it did when I purchased it, lol).",
+        "chosen": "This review expresses mixed sentiment. The reviewer acknowledges that the DVD release lacks extras but praises the good quality and affordable price.",
+        "rejected": "The review is positive because it mentions good quality and a good price."
+    },
+    {
+        "review": "Good picture on blu-ray, but I don't know if it would be much different on DVD since the lighting in the movie is pretty dark.",
+        "chosen": "This review contains mixed sentiment. The reviewer appreciates the picture quality on blu-ray but expresses uncertainty about whether it would be much different on DVD due to the dark lighting in the movie.",
+        "rejected": "The review is positive because it mentions good picture quality on blu-ray."
+    },
+    {
+        "review": "I've always been a John Mellencamp fan (all the way back to Jack and Diane). It's been a while since I've bought one of his albums, but I bought this one on a whim. I should have read some reviews first. I'm very disappointed. Cuttin' Heads and Peaceful World are ok songs, but there isn't a standout in the bunch. Too many of them are too mellow. Pass on this album if you like the older stuff.",
+        "chosen": "This review expresses disappointment with the album, highlighting that there are no standout songs and many are too mellow. It also advises fans of John Mellencamp's older stuff to pass on this album.",
+        "rejected": "The review is negative because it mentions disappointment and not liking the new songs."
+    },
+    {
+        "review": "I need t's like this to get through my days at the barn with the horses! They're great and thanks for the quick shipping.",
+        "chosen": "This review expresses positive sentiment towards the product, specifically mentioning its usefulness at the barn and appreciation for quick shipping.",
+        "rejected": "The review is positive because it mentions the quick shipping."
+    },
+    {
+        "review": "In 1880s Australia, a lawman makes a deal with a bandit to bring his murderous brother to justice. Simple story about the brutality of frontier life has direction, cinematography and characters reminiscent of the best 60s spaghetti westerns such as \"Once Upon a Time in the West\" (1969). Viewers may also enjoy the similar-styled \"The Three Burials of Melquiades Estrada\" (2005) and \"No Country for Old Men\" (2007).",
+        "chosen": "This review provides a nuanced analysis of the film, highlighting its direction, cinematography, and characters reminiscent of classic spaghetti westerns. It also suggests that viewers may enjoy similar-styled films like 'The Three Burials of Melquiades Estrada' and 'No Country for Old Men.'",
+        "rejected": "The review is positive because it mentions the direction, cinematography, and characters reminiscent of classic spaghetti westerns."
+    }
+]

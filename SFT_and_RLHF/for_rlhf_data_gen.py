@@ -43,16 +43,34 @@ def generate_preference_dataset(output_file: str, num_samples: int = 1000) -> No
 
     # The prompt template, which automatically includes formatting instructions from the parser
     prompt_template = PromptTemplate(
-        template="""You are an expert data labeler. Your task is to generate a preference pair for sentiment analysis of an Amazon product review.
+            template="""You are an expert data labeler. Your task is to generate a high-quality preference pair for training a reward model.
+    The 'chosen' response must be a comprehensive and nuanced summary of the review's sentiment.
+    The 'rejected' response must be a plausible but clearly inferior summary that contains a specific flaw.
 
-        Review:
-        {review}
+    Here are the types of flaws to introduce into the 'rejected' response:
+    - It is too simplistic or misses the main point of the review.
+    - It is factually inaccurate and misrepresents details from the review.
+    - It fails to capture mixed sentiment, labeling a nuanced review as purely positive or negative.
+    - It focuses on a minor, unimportant detail of the review.
 
-        {format_instructions}
-        """,
-                input_variables=["review"],
-                partial_variables={"format_instructions": pydantic_parser.get_format_instructions()}
-            )
+    ---
+    EXAMPLE:
+    Review: "This camera takes great photos, but the user interface is very confusing."
+    Output:
+    {{
+        "chosen": "This is a mixed sentiment review. The reviewer praised the photo quality but criticized the confusing user interface.",
+        "rejected": "The review is positive because it mentions great photos."
+    }}
+    ---
+    ACTUAL TASK:
+    Review:
+    {review}
+
+    {format_instructions}
+    """,
+            input_variables=["review"],
+            partial_variables={"format_instructions": pydantic_parser.get_format_instructions()}
+        )
 
     # The complete chain that pipes all components together
     # This defines the flow: format prompt -> call LLM -> parse/fix output
@@ -100,4 +118,4 @@ def generate_preference_dataset(output_file: str, num_samples: int = 1000) -> No
 # SECTION 3: SCRIPT EXECUTION
 # =====================================================================================
 if __name__ == "__main__":
-    generate_preference_dataset("langchain_generated_amazon_preferences.json", num_samples=10)
+    generate_preference_dataset("RLHF_data_for_sentiment_product_review.json", num_samples=500)
