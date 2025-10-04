@@ -54,43 +54,64 @@ def run_sft():
     tokenizer = AutoTokenizer.from_pretrained(config.BASE_MODEL_ID, token=hf_token)
     tokenizer.pad_token = tokenizer.eos_token
 
-# --- 2. Load and Prepare Dataset ---
-dataset = load_dataset(config.SFT_DATASET_ID, split="train[:1%]") # Use a small slice for demonstration
+    # --- 2. Load and Prepare Dataset ---
+    # FIX: Load a separate split for training and validation.
+    train_dataset = load_dataset(config.SFT_DATASET_ID, split="train[:1%]")
+    eval_dataset = load_dataset(config.SFT_DATASET_ID, split="test[:1%]") # Use a small slice of the test set for validation
 
-# REMOVE the old format_dolly function and ADD this one:
-def format_review(example):
-    # Convert the numerical label to a descriptive string
-    sentiment = "Positive" if example['label'] == 1 else "Negative"
-    
-    # Frame the review as an instruction-following task
-    messages = [
-        {"role": "user", "content": f"Analyze the sentiment of this Amazon product review and classify it as either Positive or Negative.\n\nReview:\n\"{example['content']}\""},
-        {"role": "assistant", "content": f"Sentiment: {sentiment}"}
-    ]
-    return {"text": tokenizer.apply_chat_template(messages, tokenize=False)}
+    def format_review(example):
+        sentiment = "Positive" if example['label'] == 1 else "Negative"
+        messages = [
+            {"role": "user", "content": f"Analyze the sentiment of this Amazon product review and classify it as either Positive or Negative.\n\nReview:\n\"{example['content']}\""},
+            {"role": "assistant", "content": f"Sentiment: {sentiment}"}
+        ]
+        return {"text": tokenizer.apply_chat_template(messages, tokenize=False)}
 
-# Apply the new function to the dataset
-formatted_dataset = dataset.map(format_review)
+    # FIX: Apply the formatting to both datasets.
+    formatted_train_dataset = train_dataset.map(format_review)
+    formatted_eval_dataset = eval_dataset.map(format_review)
 
-# --- 3. Configure LoRA and Trainer ---
-peft_config = LoraConfig(
-    r=16, lora_alpha=32, lora_dropout=0.05, bias="none", task_type="CAUSAL_LM"
-)
-training_args = TrainingArguments(
-    output_dir=config.SFT_ADAPTER_PATH, num_train_epochs=5, per_device_train_batch_size=32,
-    gradient_accumulation_steps=2, optim="paged_adamw_32bit", learning_rate=2e-4,
-    lr_scheduler_type="cosine", logging_steps=10, save_strategy="epoch", bf16=True
-)
-trainer = SFTTrainer(
-    model=model, args=training_args, train_dataset=formatted_dataset,
-    peft_config=peft_config, tokenizer=tokenizer, max_seq_length=config.MAX_SEQ_LENGTH,
-    dataset_text_field="text"
-)
+    # --- 3. Configure LoRA and Trainer ---
+    peft_config = LoraConfig(
+        r=16, lora_alpha=32, lora_dropout=0.05, bias="none", task_type="CAUSAL_LM"
+    )
 
-# --- 4. Train and Save Adapter ---
-trainer.train()
-trainer.save_model()
-print(f"--- ✅ SFT Stage Complete. Adapter saved to {config.SFT_ADAPTER_PATH} ---")
+    # FIX: Update TrainingArguments for evaluation and optimal saving.
+    training_args = TrainingArguments(
+        output_dir=config.SFT_ADAPTER_PATH,
+        num_train_epochs=5,
+        per_device_train_batch_size=32,
+        gradient_accumulation_steps=2,
+        optim="paged_adamw_32bit",
+        learning_rate=2e-4,
+        lr_scheduler_type="cosine",
+        logging_steps=10,
+        bf16=True,
+        # -- Added for validation --
+        evaluation_strategy="epoch",      # Evaluate at the end of each epoch.
+        save_strategy="epoch",            # Save a checkpoint at the end of each epoch.
+        load_best_model_at_end=True,      # Load the best checkpoint when training finishes.
+        metric_for_best_model="eval_loss",# Use validation loss to determine the "best" model.
+        greater_is_better=False,          # A lower loss is better.
+        save_total_limit=2                # Only keep the best and the latest checkpoint.
+    )
+
+    # FIX: Pass the evaluation dataset to the trainer.
+    trainer = SFTTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=formatted_train_dataset,
+        eval_dataset=formatted_eval_dataset, # Pass the validation set here.
+        peft_config=peft_config,
+        tokenizer=tokenizer,
+        max_seq_length=config.MAX_SEQ_LENGTH,
+        dataset_text_field="text"
+    )
+
+    # --- 4. Train and Save Adapter ---
+    trainer.train()
+    trainer.save_model() # This will now save the best model identified during training.
+    print(f"--- ✅ SFT Stage Complete. Best model adapter saved to {config.SFT_ADAPTER_PATH} ---")
 
 
 
