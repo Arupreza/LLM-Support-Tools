@@ -46,53 +46,81 @@ def run_sft():
 
     # --- 1. Load Model and Tokenizer ---
     quantization_config = BitsAndBytesConfig(
-        load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16
+        load_in_4bit=True, 
+        bnb_4bit_quant_type="nf4", 
+        bnb_4bit_compute_dtype=torch.bfloat16
     )
     model = AutoModelForCausalLM.from_pretrained(
-        config.BASE_MODEL_ID, quantization_config=quantization_config, device_map="auto", token=hf_token
+        config.BASE_MODEL_ID, 
+        quantization_config=quantization_config, 
+        device_map="auto", 
+        token=hf_token
     )
     tokenizer = AutoTokenizer.from_pretrained(config.BASE_MODEL_ID, token=hf_token)
     tokenizer.pad_token = tokenizer.eos_token
 
-# --- 2. Load and Prepare Dataset ---
-dataset = load_dataset(config.SFT_DATASET_ID, split="train[:1%]") # Use a small slice for demonstration
+    # --- 2. Load and Prepare Dataset ---
+    # FIX: Load a separate split for training and validation.
+    train_dataset = load_dataset(config.SFT_DATASET_ID, split="train[:1%]")
+    eval_dataset = load_dataset(config.SFT_DATASET_ID, split="test[:1%]") # Use a small slice of the test set for validation
 
-# REMOVE the old format_dolly function and ADD this one:
-def format_review(example):
-    # Convert the numerical label to a descriptive string
-    sentiment = "Positive" if example['label'] == 1 else "Negative"
-    
-    # Frame the review as an instruction-following task
-    messages = [
-        {"role": "user", "content": f"Analyze the sentiment of this Amazon product review and classify it as either Positive or Negative.\n\nReview:\n\"{example['content']}\""},
-        {"role": "assistant", "content": f"Sentiment: {sentiment}"}
-    ]
-    return {"text": tokenizer.apply_chat_template(messages, tokenize=False)}
+    def format_review(example):
+        sentiment = "Positive" if example['label'] == 1 else "Negative"
+        messages = [
+            {"role": "user", "content": f"Analyze the sentiment of this Amazon product review and classify it as either Positive or Negative.\n\nReview:\n\"{example['content']}\""},
+            {"role": "assistant", "content": f"Sentiment: {sentiment}"}
+        ]
+        return {"text": tokenizer.apply_chat_template(messages, tokenize=False)}
 
-# Apply the new function to the dataset
-formatted_dataset = dataset.map(format_review)
+    # FIX: Apply the formatting to both datasets.
+    formatted_train_dataset = train_dataset.map(format_review)
+    formatted_eval_dataset = eval_dataset.map(format_review)
 
-# --- 3. Configure LoRA and Trainer ---
-peft_config = LoraConfig(
-    r=16, lora_alpha=32, lora_dropout=0.05, bias="none", task_type="CAUSAL_LM"
-)
-training_args = TrainingArguments(
-    output_dir=config.SFT_ADAPTER_PATH, num_train_epochs=5, per_device_train_batch_size=32,
-    gradient_accumulation_steps=2, optim="paged_adamw_32bit", learning_rate=2e-4,
-    lr_scheduler_type="cosine", logging_steps=10, save_strategy="epoch", bf16=True
-)
-trainer = SFTTrainer(
-    model=model, args=training_args, train_dataset=formatted_dataset,
-    peft_config=peft_config, tokenizer=tokenizer, max_seq_length=config.MAX_SEQ_LENGTH,
-    dataset_text_field="text"
-)
+    # --- 3. Configure LoRA and Trainer ---
+    peft_config = LoraConfig(
+        r=16, 
+        lora_alpha=32, 
+        lora_dropout=0.05, 
+        bias="none", 
+        task_type="CAUSAL_LM"
+    )
 
-# --- 4. Train and Save Adapter ---
-trainer.train()
-trainer.save_model()
-print(f"--- ✅ SFT Stage Complete. Adapter saved to {config.SFT_ADAPTER_PATH} ---")
+    # FIX: Update TrainingArguments for evaluation and optimal saving.
+    training_args = TrainingArguments(
+        output_dir=config.SFT_ADAPTER_PATH,
+        num_train_epochs=5,
+        per_device_train_batch_size=32,
+        gradient_accumulation_steps=2,
+        optim="paged_adamw_32bit",
+        learning_rate=2e-4,
+        lr_scheduler_type="cosine",
+        logging_steps=10,
+        bf16=True,
+        # -- Added for validation --
+        evaluation_strategy="epoch",      # Evaluate at the end of each epoch.
+        save_strategy="epoch",            # Save a checkpoint at the end of each epoch.
+        load_best_model_at_end=True,      # Load the best checkpoint when training finishes.
+        metric_for_best_model="eval_loss",# Use validation loss to determine the "best" model.
+        greater_is_better=False,          # A lower loss is better.
+        save_total_limit=2                # Only keep the best and the latest checkpoint.
+    )
 
+    # FIX: Pass the evaluation dataset to the trainer.
+    trainer = SFTTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=formatted_train_dataset,
+        eval_dataset=formatted_eval_dataset, # Pass the validation set here.
+        peft_config=peft_config,
+        tokenizer=tokenizer,
+        max_seq_length=config.MAX_SEQ_LENGTH,
+        dataset_text_field="text"
+    )
 
+    # --- 4. Train and Save Adapter ---
+    trainer.train()
+    trainer.save_model() # This will now save the best model identified during training.
+    print(f"--- ✅ SFT Stage Complete. Best model adapter saved to {config.SFT_ADAPTER_PATH} ---")
 
 # =====================================================================================
 # STAGE 2: REWARD MODELING (RM)
@@ -107,11 +135,16 @@ def run_reward_modeling():
 
     # --- 1. Load a New Base Model for Sequence Classification ---
     quantization_config = BitsAndBytesConfig(
-        load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16
+        load_in_4bit=True, 
+        bnb_4bit_quant_type="nf4", 
+        bnb_4bit_compute_dtype=torch.bfloat16
     )
     model = AutoModelForSequenceClassification.from_pretrained(
-        config.BASE_MODEL_ID, num_labels=1, quantization_config=quantization_config,
-        device_map="auto", token=hf_token
+        config.BASE_MODEL_ID, 
+        num_labels=1, 
+        quantization_config=quantization_config,
+        device_map="auto", 
+        token=hf_token
     )
     tokenizer = AutoTokenizer.from_pretrained(config.BASE_MODEL_ID, token=hf_token)
     tokenizer.pad_token = tokenizer.eos_token
@@ -144,25 +177,43 @@ def run_reward_modeling():
 
     # --- 3. Configure LoRA and RewardTrainer ---
     peft_config = LoraConfig(
-        r=16, lora_alpha=32, lora_dropout=0.05, bias="none", task_type="SEQ_CLS"
+        r=16, 
+        lora_alpha=32, 
+        lora_dropout=0.05, 
+        bias="none", 
+        task_type="SEQ_CLS"
     )
+    
     training_args = TrainingArguments(
-        output_dir=config.RM_ADAPTER_PATH, num_train_epochs=1, per_device_train_batch_size=2,
-        gradient_accumulation_steps=4, optim="paged_adamw_32bit", learning_rate=2e-4,
-        lr_scheduler_type="cosine", logging_steps=10, save_strategy="epoch", bf16=True,
+        output_dir=config.RM_ADAPTER_PATH, 
+        num_train_epochs=1, 
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=4, 
+        optim="paged_adamw_32bit", 
+        learning_rate=2e-4,
+        lr_scheduler_type="cosine", 
+        logging_steps=10, 
+        save_strategy="epoch", 
+        bf16=True,
         evaluation_strategy="no"
     )
+    
     trainer = RewardTrainer(
-        model=model, args=training_args, tokenizer=tokenizer, train_dataset=formatted_dataset,
-        peft_config=peft_config, max_length=config.MAX_SEQ_LENGTH
+        model=model, 
+        args=training_args, 
+        tokenizer=tokenizer, 
+        train_dataset=formatted_dataset,
+        peft_config=peft_config, 
+        max_length=config.MAX_SEQ_LENGTH
     )
 
     # --- 4. Train and Save Adapter ---
     trainer.train()
     trainer.save_model()
     print(f"--- ✅ Reward Modeling Stage Complete. Adapter saved to {config.RM_ADAPTER_PATH} ---")
-
-# =====================================================================================
+    
+    
+    # =====================================================================================
 # STAGE 3: REINFORCEMENT LEARNING (PPO)
 # =====================================================================================
 def run_ppo():
@@ -173,24 +224,31 @@ def run_ppo():
 
     # --- 1. PPO Configuration ---
     ppo_config = PPOConfig(
-        batch_size=1, learning_rate=1.41e-5, log_with="none"
+        batch_size=1, 
+        learning_rate=1.41e-5, 
+        log_with="none"
     )
 
     # --- 2. Load Models ---
     # A) Policy Model (SFT-tuned)
     base_model = AutoModelForCausalLM.from_pretrained(
         config.BASE_MODEL_ID,
-        quantization_config=BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16),
+        quantization_config=BitsAndBytesConfig(load_in_4bit=True, 
+                                                bnb_4bit_quant_type="nf4", 
+                                                bnb_4bit_compute_dtype=torch.bfloat16),
         device_map="auto", token=hf_token
     )
-    policy_model = AutoModelForCausalLMWithValueHead.from_pretrained(base_model, peft_config=LoraConfig.from_pretrained(config.SFT_ADAPTER_PATH))
+    policy_model = AutoModelForCausalLMWithValueHead.from_pretrained(base_model, 
+                                                                    peft_config=LoraConfig.from_pretrained(config.SFT_ADAPTER_PATH))
     tokenizer = AutoTokenizer.from_pretrained(config.BASE_MODEL_ID, token=hf_token)
     tokenizer.pad_token = tokenizer.eos_token
     
     # B) Reward Model (RM-tuned)
     rm_model = AutoModelForSequenceClassification.from_pretrained(
         config.BASE_MODEL_ID, num_labels=1,
-        quantization_config=BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16),
+        quantization_config=BitsAndBytesConfig(load_in_4bit=True, 
+                                                bnb_4bit_quant_type="nf4", 
+                                                bnb_4bit_compute_dtype=torch.bfloat16),
         device_map="auto", token=hf_token
     )
     rm_model = PeftModel.from_pretrained(rm_model, config.RM_ADAPTER_PATH)
@@ -212,12 +270,20 @@ def run_ppo():
     formatted_dataset = dataset.map(format_prompt)
     
     ppo_trainer = PPOTrainer(
-        config=ppo_config, model=policy_model, ref_model=None, tokenizer=tokenizer,
+        config=ppo_config, 
+        model=policy_model, 
+        ref_model=None, 
+        tokenizer=tokenizer,
         dataset=formatted_dataset, data_collator=lambda data: dict((key, [d[key] for d in data]) for key in data[0])
     )
 
     # --- 4. PPO Training Loop ---
-    generation_kwargs = {"min_length": -1, "top_k": 0.0, "top_p": 1.0, "do_sample": True, "pad_token_id": tokenizer.eos_token_id, "max_new_tokens": 128}
+    generation_kwargs = {"min_length": -1, 
+                        "top_k": 0.0, 
+                        "top_p": 1.0, 
+                        "do_sample": True, 
+                        "pad_token_id": tokenizer.eos_token_id, 
+                        "max_new_tokens": 128}
 
     for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
         if epoch >= 100: break
@@ -234,7 +300,10 @@ def run_ppo():
         texts_for_reward = [q + r for q, r in zip(batch["query"], batch["response"])]
         
         # The reward model expects a standard input format, not a pipeline.
-        tokenized_rewards = tokenizer(texts_for_reward, return_tensors="pt", padding=True, truncation=True, max_length=config.MAX_SEQ_LENGTH).to(rm_model.device)
+        tokenized_rewards = tokenizer(texts_for_reward, return_tensors="pt", 
+                                        padding=True, 
+                                        truncation=True, 
+                                        max_length=config.MAX_SEQ_LENGTH).to(rm_model.device)
         reward_outputs = rm_model(**tokenized_rewards)
         rewards = [output for output in reward_outputs.logits.squeeze()] # Squeeze to get a list of scalar rewards
         
