@@ -9,6 +9,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModelForSequen
 from peft import LoraConfig, PeftModel
 from trl import SFTTrainer, RewardTrainer, PPOConfig, PPOTrainer, AutoModelForCausalLMWithValueHead
 from tqdm import tqdm
+import numpy as np
+from datasets import ClassLabel
 
 # Load environment variables for secure token management
 load_dotenv()
@@ -122,6 +124,7 @@ def run_sft():
 def run_reward_modeling():
     """
     PURPOSE: Train a classifier to predict which of two responses is better.
+    This model acts as the "judge" or reward function in the PPO stage.
     OUTPUT: A LoRA adapter for the reward model.
     """
     print("\n--- 🚀 STAGE 2: REWARD MODELING (RM) ---")
@@ -144,7 +147,11 @@ def run_reward_modeling():
     model.config.pad_token_id = tokenizer.pad_token_id
 
     # --- 2. Load and Prepare Preference Dataset ---
-    dataset = load_dataset("json", data_files=config.RM_PPO_DATASET_PATH, split="train[:10%]")
+    # MODIFICATION 1: Split the dataset for training and evaluation
+    full_dataset = load_dataset("json", data_files=config.RM_PPO_DATASET_PATH, split="train")
+    dataset_splits = full_dataset.train_test_split(test_size=0.1, shuffle=True, seed=42)
+    train_dataset = dataset_splits['train']
+    eval_dataset = dataset_splits['test']
 
     def format_and_tokenize_pairs(example):
         prompt = f"Provide a sentiment analysis summary for the following review:\n\nReview:\n\"{example['review']}\""
@@ -161,7 +168,21 @@ def run_reward_modeling():
             "input_ids_rejected": tokenized_rejected["input_ids"],
             "attention_mask_rejected": tokenized_rejected["attention_mask"],
         }
-    formatted_dataset = dataset.map(format_and_tokenize_pairs)
+    
+    formatted_train_dataset = train_dataset.map(format_and_tokenize_pairs)
+    formatted_eval_dataset = eval_dataset.map(format_and_tokenize_pairs)
+
+    # MODIFICATION 2: Define a function to compute accuracy
+    def compute_metrics(eval_pred):
+        predictions, _ = eval_pred
+        # The predictions are scores for the chosen and rejected responses.
+        # A correct prediction means the score for the chosen response is higher.
+        predictions_chosen = predictions[:, 0]
+        predictions_rejected = predictions[:, 1]
+        
+        # Accuracy is the percentage of times the chosen response was scored higher
+        accuracy = np.mean(predictions_chosen > predictions_rejected)
+        return {"accuracy": accuracy}
 
     # --- 3. Configure LoRA and RewardTrainer ---
     peft_config = LoraConfig(
@@ -172,10 +193,12 @@ def run_reward_modeling():
         task_type="SEQ_CLS"
     )
     
+    # MODIFICATION 3: Update TrainingArguments to enable evaluation
     training_args = TrainingArguments(
         output_dir=config.RM_ADAPTER_PATH,
         num_train_epochs=1,
         per_device_train_batch_size=2,
+        per_device_eval_batch_size=4, # Set batch size for evaluation
         gradient_accumulation_steps=4,
         optim="paged_adamw_32bit",
         learning_rate=2e-4,
@@ -183,22 +206,29 @@ def run_reward_modeling():
         logging_steps=10,
         save_strategy="epoch",
         bf16=True,
-        evaluation_strategy="no"
+        evaluation_strategy="epoch", # Evaluate at the end of each epoch
+        load_best_model_at_end=True, # Load the best model based on eval metrics
+        metric_for_best_model="accuracy", # Use accuracy to determine the best model
+        greater_is_better=True, # Higher accuracy is better
+        save_total_limit=1
     )
     
+    # MODIFICATION 4: Pass the evaluation dataset and metrics function to the trainer
     trainer = RewardTrainer(
         model=model,
         args=training_args,
         tokenizer=tokenizer,
-        train_dataset=formatted_dataset,
+        train_dataset=formatted_train_dataset,
+        eval_dataset=formatted_eval_dataset, # Pass the validation set
         peft_config=peft_config,
-        max_length=config.MAX_SEQ_LENGTH
+        max_length=config.MAX_SEQ_LENGTH,
+        compute_metrics=compute_metrics # Pass the metrics function
     )
 
     # --- 4. Train and Save Adapter ---
     trainer.train()
     trainer.save_model()
-    print(f"--- ✅ Reward Modeling Stage Complete. Adapter saved to {config.RM_ADAPTER_PATH} ---")
+    print(f"--- ✅ Reward Modeling Stage Complete. Best model adapter saved to {config.RM_ADAPTER_PATH} ---")
     
     
 # =====================================================================================
@@ -303,3 +333,21 @@ def run_ppo():
     # --- 5. Save the Final Model ---
     ppo_trainer.save_model(config.PPO_MODEL_PATH)
     print(f"--- ✅ PPO Stage Complete. Final model saved to {config.PPO_MODEL_PATH} ---")
+
+
+if __name__ == '__main__':
+    # 🚀 Execute the full RLHF pipeline
+    
+    # Stage 1: Supervised Fine-Tuning
+    # This teaches the model the desired response format.
+    run_sft()
+    
+    # Stage 2: Reward Modeling
+    # This trains a "judge" to score the model's responses.
+    run_reward_modeling()
+    
+    # Stage 3: Proximal Policy Optimization
+    # This uses the "judge" to refine the SFT model.
+    run_ppo()
+
+    print("\n🎉🎉🎉 RLHF Pipeline Complete! 🎉🎉🎉")
