@@ -5,12 +5,14 @@ import os
 import torch
 from datasets import load_dataset
 from dotenv import load_dotenv
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModelForSequenceClassification, BitsAndBytesConfig, TrainingArguments
-from peft import LoraConfig, PeftModel
-from trl import SFTTrainer, RewardTrainer, PPOConfig, PPOTrainer, AutoModelForCausalLMWithValueHead
+from transformers import (
+    AutoModelForCausalLM, AutoTokenizer, AutoModelForSequenceClassification,
+    BitsAndBytesConfig, TrainingArguments, DataCollatorForLanguageModeling
+)
+from peft import LoraConfig, get_peft_model, PeftModel
+from trl import SFTTrainer, RewardTrainer, PPOConfig, PPOTrainer, AutoModelForCausalLMWithValueHead, create_reference_model
 from tqdm import tqdm
 import numpy as np
-from datasets import ClassLabel
 
 # Load environment variables for secure token management
 load_dotenv()
@@ -28,7 +30,7 @@ class ScriptConfig:
     # --- Paths for Saved Adapters ---
     SFT_ADAPTER_PATH = "./sft_llama3_adapters"
     RM_ADAPTER_PATH = "./rm_llama3_adapters"
-    PPO_MODEL_PATH = "./ppo_llama3_model" # PPO saves the full model
+    PPO_MODEL_PATH = "./ppo_llama3_model"
 
 config = ScriptConfig()
 hf_token = os.getenv("HF_TOKEN")
@@ -38,6 +40,7 @@ if not hf_token:
 # =====================================================================================
 # STAGE 1: SUPERVISED FINE-TUNING (SFT)
 # =====================================================================================
+
 def run_sft():
     """
     PURPOSE: Teach the base model the instruction-following format.
@@ -51,29 +54,66 @@ def run_sft():
         bnb_4bit_quant_type="nf4",
         bnb_4bit_compute_dtype=torch.bfloat16
     )
-    model = AutoModelForCausalLM.from_pretrained(
-        config.BASE_MODEL_ID,
-        quantization_config=quantization_config,
-        device_map="auto",
-        token=hf_token
-    )
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            config.BASE_MODEL_ID,
+            quantization_config=quantization_config,
+            device_map="auto",
+            token=hf_token
+        )
+    except Exception as e:
+        print(f"Model loading failed: {e}. Check token/GPU.")
+        return
+    
     tokenizer = AutoTokenizer.from_pretrained(config.BASE_MODEL_ID, token=hf_token)
     tokenizer.pad_token = tokenizer.eos_token
 
     # --- 2. Load and Prepare Dataset ---
-    train_dataset = load_dataset(config.SFT_DATASET_ID, split="train[:1%]")
-    eval_dataset = load_dataset(config.SFT_DATASET_ID, split="test[:1%]")
+    full_train = load_dataset(config.SFT_DATASET_ID, split="train")
+    train_dataset = full_train.select(range(int(len(full_train) * 0.005)))  # ~0.5% for dev
+    print(f"Training samples: {len(train_dataset)}")  # Quick sanity check
 
-    def format_review(example):
-        sentiment = "Positive" if example['label'] == 1 else "Negative"
-        messages = [
-            {"role": "user", "content": f"Analyze the sentiment of this Amazon product review and classify it as either Positive or Negative.\n\nReview:\n\"{example['content']}\""},
-            {"role": "assistant", "content": f"Sentiment: {sentiment}"}
-        ]
-        return {"text": tokenizer.apply_chat_template(messages, tokenize=False)}
+    full_eval = load_dataset(config.SFT_DATASET_ID, split="test")
+    eval_dataset = full_eval.select(range(int(len(full_eval) * 0.005)))
+    print(f"Eval samples: {len(eval_dataset)}")
 
-    formatted_train_dataset = train_dataset.map(format_review)
-    formatted_eval_dataset = eval_dataset.map(format_review)
+# NEW Function (handles batches for speed):
+    def format_review(examples):  # Note: plural 'examples'
+        texts = []
+        for label, content in zip(examples['label'], examples['content']):
+            sentiment = "Positive" if label == 1 else "Negative"
+            messages = [
+                {"role": "user", "content": f"Analyze the sentiment of this Amazon product review and classify it as either Positive or Negative.\n\nReview:\n\"{content}\""},
+                {"role": "assistant", "content": f"Sentiment: {sentiment}"}
+            ]
+            text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+            texts.append(text)
+        
+        tokenized = tokenizer(
+            texts, 
+            truncation=True, 
+            max_length=config.MAX_SEQ_LENGTH,
+            padding="max_length"  # Uniform padding
+        )
+        
+        tokenized["labels"] = [ids[:] for ids in tokenized["input_ids"]]  # Deep copy for lists
+        return tokenized
+
+    # Update map calls (add batched=True for ~10x speed):
+    formatted_train_dataset = train_dataset.map(
+        format_review, 
+        remove_columns=train_dataset.column_names,
+        desc="Formatting train dataset",
+        batched=True,  # <-- Batch magic (default batch_size=1000)
+        batch_size=1000  # Tune if memory tight
+    )
+    formatted_eval_dataset = eval_dataset.map(
+        format_review, 
+        remove_columns=eval_dataset.column_names,
+        desc="Formatting eval dataset",
+        batched=True,
+        batch_size=1000
+    )
 
     # --- 3. Configure LoRA and Trainer ---
     peft_config = LoraConfig(
@@ -86,20 +126,29 @@ def run_sft():
 
     training_args = TrainingArguments(
         output_dir=config.SFT_ADAPTER_PATH,
-        num_train_epochs=5,
-        per_device_train_batch_size=32,
+        num_train_epochs=3,  # Shorter for dev; bump to 5 later
+        per_device_train_batch_size=16,  # Safer memory
         gradient_accumulation_steps=2,
         optim="paged_adamw_32bit",
         learning_rate=2e-4,
         lr_scheduler_type="cosine",
         logging_steps=10,
         bf16=True,
-        evaluation_strategy="epoch",
+        eval_strategy="epoch",
         save_strategy="epoch",
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
-        save_total_limit=2
+        save_total_limit=2,
+        remove_unused_columns=False,
+        push_to_hub=False  # <-- ADD THIS: Disables Hub, skips token pop drama
+    )
+
+    # Remove the "Training args ready" print and push_to_hub_token=None line (no longer needed)
+    # Keep collator & trainer clean (no extra kwargs)
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer,
+        mlm=False
     )
 
     trainer = SFTTrainer(
@@ -108,9 +157,7 @@ def run_sft():
         train_dataset=formatted_train_dataset,
         eval_dataset=formatted_eval_dataset,
         peft_config=peft_config,
-        tokenizer=tokenizer,
-        max_seq_length=config.MAX_SEQ_LENGTH,
-        dataset_text_field="text"
+        data_collator=data_collator
     )
 
     # --- 4. Train and Save Adapter ---
@@ -124,7 +171,6 @@ def run_sft():
 def run_reward_modeling():
     """
     PURPOSE: Train a classifier to predict which of two responses is better.
-    This model acts as the "judge" or reward function in the PPO stage.
     OUTPUT: A LoRA adapter for the reward model.
     """
     print("\n--- 🚀 STAGE 2: REWARD MODELING (RM) ---")
@@ -135,54 +181,41 @@ def run_reward_modeling():
         bnb_4bit_quant_type="nf4",
         bnb_4bit_compute_dtype=torch.bfloat16
     )
-    model = AutoModelForSequenceClassification.from_pretrained(
-        config.BASE_MODEL_ID,
-        num_labels=1,
-        quantization_config=quantization_config,
-        device_map="auto",
-        token=hf_token
-    )
+    try:
+        model = AutoModelForSequenceClassification.from_pretrained(
+            config.BASE_MODEL_ID,
+            num_labels=1,  # Regression for scalar rewards
+            quantization_config=quantization_config,
+            device_map="auto",
+            token=hf_token
+        )
+    except Exception as e:
+        print(f"RM Model loading failed: {e}. Check token/GPU.")
+        return
+    
     tokenizer = AutoTokenizer.from_pretrained(config.BASE_MODEL_ID, token=hf_token)
     tokenizer.pad_token = tokenizer.eos_token
     model.config.pad_token_id = tokenizer.pad_token_id
 
-    # --- 2. Load and Prepare Preference Dataset ---
-    # MODIFICATION 1: Split the dataset for training and evaluation
+    # --- 2. Load and Prepare Preference Dataset (Keep as Text for TRL) ---
     full_dataset = load_dataset("json", data_files=config.RM_PPO_DATASET_PATH, split="train")
     dataset_splits = full_dataset.train_test_split(test_size=0.1, shuffle=True, seed=42)
     train_dataset = dataset_splits['train']
     eval_dataset = dataset_splits['test']
 
-    def format_and_tokenize_pairs(example):
-        prompt = f"Provide a sentiment analysis summary for the following review:\n\nReview:\n\"{example['review']}\""
-        
-        text_chosen = tokenizer.apply_chat_template([{"role": "user", "content": prompt}, {"role": "assistant", "content": example['chosen']}], tokenize=False)
-        text_rejected = tokenizer.apply_chat_template([{"role": "user", "content": prompt}, {"role": "assistant", "content": example['rejected']}], tokenize=False)
-        
-        tokenized_chosen = tokenizer(text_chosen, truncation=True, max_length=config.MAX_SEQ_LENGTH)
-        tokenized_rejected = tokenizer(text_rejected, truncation=True, max_length=config.MAX_SEQ_LENGTH)
-        
-        return {
-            "input_ids_chosen": tokenized_chosen["input_ids"],
-            "attention_mask_chosen": tokenized_chosen["attention_mask"],
-            "input_ids_rejected": tokenized_rejected["input_ids"],
-            "attention_mask_rejected": tokenized_rejected["attention_mask"],
-        }
-    
-    formatted_train_dataset = train_dataset.map(format_and_tokenize_pairs)
-    formatted_eval_dataset = eval_dataset.map(format_and_tokenize_pairs)
+    # Format: Add 'prompt' column; TRL handles tokenization of chosen/rejected
+    def add_prompt(example):
+        example['prompt'] = f"Provide a sentiment analysis summary for the following review:\n\nReview:\n\"{example['review']}\""
+        return example
 
-    # MODIFICATION 2: Define a function to compute accuracy
+    train_dataset = train_dataset.map(add_prompt)
+    eval_dataset = eval_dataset.map(add_prompt)
+
     def compute_metrics(eval_pred):
         predictions, _ = eval_pred
-        # The predictions are scores for the chosen and rejected responses.
-        # A correct prediction means the score for the chosen response is higher.
-        predictions_chosen = predictions[:, 0]
-        predictions_rejected = predictions[:, 1]
-        
-        # Accuracy is the percentage of times the chosen response was scored higher
-        accuracy = np.mean(predictions_chosen > predictions_rejected)
-        return {"accuracy": accuracy}
+        # TRL provides (chosen_rewards, rejected_rewards)
+        accuracy = np.mean(predictions[0] > predictions[1])
+        return {"preference_accuracy": accuracy}
 
     # --- 3. Configure LoRA and RewardTrainer ---
     peft_config = LoraConfig(
@@ -193,43 +226,40 @@ def run_reward_modeling():
         task_type="SEQ_CLS"
     )
     
-    # MODIFICATION 3: Update TrainingArguments to enable evaluation
     training_args = TrainingArguments(
         output_dir=config.RM_ADAPTER_PATH,
         num_train_epochs=1,
-        per_device_train_batch_size=2,
-        per_device_eval_batch_size=4, # Set batch size for evaluation
-        gradient_accumulation_steps=4,
+        per_device_train_batch_size=1,  # Conservative for pairs
+        per_device_eval_batch_size=2,
+        gradient_accumulation_steps=8,  # Effective batch=8
         optim="paged_adamw_32bit",
         learning_rate=2e-4,
         lr_scheduler_type="cosine",
         logging_steps=10,
         save_strategy="epoch",
         bf16=True,
-        evaluation_strategy="epoch", # Evaluate at the end of each epoch
-        load_best_model_at_end=True, # Load the best model based on eval metrics
-        metric_for_best_model="accuracy", # Use accuracy to determine the best model
-        greater_is_better=True, # Higher accuracy is better
+        eval_strategy="epoch",
+        load_best_model_at_end=True,
+        metric_for_best_model="preference_accuracy",
+        greater_is_better=True,
         save_total_limit=1
     )
     
-    # MODIFICATION 4: Pass the evaluation dataset and metrics function to the trainer
     trainer = RewardTrainer(
         model=model,
         args=training_args,
         tokenizer=tokenizer,
-        train_dataset=formatted_train_dataset,
-        eval_dataset=formatted_eval_dataset, # Pass the validation set
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         peft_config=peft_config,
-        max_length=config.MAX_SEQ_LENGTH,
-        compute_metrics=compute_metrics # Pass the metrics function
+        compute_metrics=compute_metrics,
+        loss_type="sigmoid"  # Better for preference ranking
     )
 
     # --- 4. Train and Save Adapter ---
     trainer.train()
     trainer.save_model()
     print(f"--- ✅ Reward Modeling Stage Complete. Best model adapter saved to {config.RM_ADAPTER_PATH} ---")
-    
     
 # =====================================================================================
 # STAGE 3: REINFORCEMENT LEARNING (PPO)
@@ -242,112 +272,144 @@ def run_ppo():
 
     # --- 1. PPO Configuration ---
     ppo_config = PPOConfig(
-        batch_size=1,
+        batch_size=4,  # Small for stability
         learning_rate=1.41e-5,
         log_with="none"
     )
 
-    # --- 2. Load Models ---
-    # A) Policy Model (SFT-tuned)
     quant_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
         bnb_4bit_compute_dtype=torch.bfloat16
     )
-    base_model = AutoModelForCausalLM.from_pretrained(
-        config.BASE_MODEL_ID,
-        quantization_config=quant_config,
-        device_map="auto", token=hf_token
-    )
-    peft_config = LoraConfig.from_pretrained(config.SFT_ADAPTER_PATH)
-    policy_model = AutoModelForCausalLMWithValueHead.from_pretrained(
-        base_model,
-        peft_config=peft_config
-    )
+
+    # --- 2. Load Models ---
+    # A) Policy Model: Load SFT LoRA, then add value head
+    try:
+        base_model = AutoModelForCausalLM.from_pretrained(
+            config.BASE_MODEL_ID,
+            quantization_config=quant_config,
+            device_map="auto", 
+            token=hf_token
+        )
+        sft_model = PeftModel.from_pretrained(base_model, config.SFT_ADAPTER_PATH)
+        model_with_value_head = AutoModelForCausalLMWithValueHead(sft_model)
+        # Re-apply PEFT if needed (value head is on top)
+        policy_model = get_peft_model(model_with_value_head, LoraConfig.from_pretrained(config.SFT_ADAPTER_PATH))
+    except Exception as e:
+        print(f"Policy model loading failed: {e}. Ensure SFT path exists.")
+        return
+
     tokenizer = AutoTokenizer.from_pretrained(config.BASE_MODEL_ID, token=hf_token)
     tokenizer.pad_token = tokenizer.eos_token
     
-    # B) Reward Model (RM-tuned)
-    rm_model = AutoModelForSequenceClassification.from_pretrained(
-        config.BASE_MODEL_ID, num_labels=1,
+    # B) Reward Model
+    rm_base_model = AutoModelForSequenceClassification.from_pretrained(
+        config.BASE_MODEL_ID, 
+        num_labels=1,
         quantization_config=quant_config,
-        device_map="auto", token=hf_token
+        device_map="auto", 
+        token=hf_token
     )
-    rm_model = PeftModel.from_pretrained(rm_model, config.RM_ADAPTER_PATH)
+    rm_model = PeftModel.from_pretrained(rm_base_model, config.RM_ADAPTER_PATH)
     rm_model.eval()
+    rm_model.config.pad_token_id = tokenizer.pad_token_id
+
+    # Create reference model for KL penalty
+    ref_model = create_reference_model(policy_model)
 
     # --- 3. Initialize PPOTrainer ---
-    dataset = load_dataset("json", data_files=config.RM_PPO_DATASET_PATH, split="train[:10%]")
+    dataset = load_dataset("json", data_files=config.RM_PPO_DATASET_PATH, split="train[:5%]")  # Smaller for dev
 
     def format_prompt(example):
         prompt = f"Provide a sentiment analysis summary for the following review:\n\nReview:\n\"{example['review']}\""
-        chat_prompt = tokenizer.apply_chat_template([{"role": "user", "content": prompt}], tokenize=False)
+        chat_prompt = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}], 
+            tokenize=False,
+            add_generation_prompt=True
+        )
         example['query'] = chat_prompt
-        example['input_ids'] = tokenizer.encode(example['query'], return_tensors="pt").squeeze(0)
-        return example
+        return example  # Tokenize in collator for batching
 
     formatted_dataset = dataset.map(format_prompt)
+    formatted_dataset.set_format(type="torch", columns=["input_ids"])  # Wait, no—PPO needs strings for query
+
+    def collator(data):
+        # Tokenize queries on-the-fly for flexibility
+        queries = [d["query"] for d in data]
+        input_ids = tokenizer(queries, return_tensors="pt", padding=True, truncation=True, max_length=config.MAX_SEQ_LENGTH).input_ids
+        return {"input_ids": input_ids}
     
     ppo_trainer = PPOTrainer(
         config=ppo_config,
         model=policy_model,
-        ref_model=None,
+        ref_model=ref_model,
         tokenizer=tokenizer,
         dataset=formatted_dataset,
-        data_collator=lambda data: dict((key, [d[key] for d in data]) for key in data[0])
+        data_collator=collator
     )
 
     # --- 4. PPO Training Loop ---
     generation_kwargs = {
         "min_length": -1,
-        "top_k": 0.0,
-        "top_p": 1.0,
+        "top_k": 50,
+        "top_p": 0.95,
         "do_sample": True,
+        "temperature": 0.7,
         "pad_token_id": tokenizer.eos_token_id,
         "max_new_tokens": 128
     }
 
-    for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
-        if epoch >= 100: break
+    output_min_length = 10  # Min response length
+    for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader), total=50):  # Limit to 50 batches
+        if epoch >= 50: 
+            break
         
-        query_tensors = batch["input_ids"]
+        query_tensors = batch["input_ids"].to(ppo_trainer.accelerator.device)
 
-        response_tensors = ppo_trainer.generate(query_tensors, return_prompt=False, **generation_kwargs)
-        batch["response"] = [tokenizer.decode(r.squeeze()) for r in response_tensors]
+        # Generate response from the policy model
+        response_tensors = ppo_trainer.generate(
+            query_tensors, 
+            return_prompt=False, 
+            output_min_length=output_min_length,
+            **generation_kwargs
+        )
+        batch["response"] = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in response_tensors]
 
-        texts_for_reward = [q + r for q, r in zip(batch["query"], batch["response"])]
+        # Get reward scores from RM (batch properly)
+        queries = [tokenizer.decode(q, skip_special_tokens=True) for q in query_tensors]
+        full_texts = [q + r for q, r in zip(queries, batch["response"])]
         
         tokenized_rewards = tokenizer(
-            texts_for_reward, return_tensors="pt",
+            full_texts, 
+            return_tensors="pt",
             padding=True,
             truncation=True,
             max_length=config.MAX_SEQ_LENGTH
-        ).to(rm_model.device)
+        ).to(ppo_trainer.accelerator.device)
         
-        reward_outputs = rm_model(**tokenized_rewards)
-        rewards = [output for output in reward_outputs.logits.squeeze()]
+        with torch.no_grad():
+            reward_outputs = rm_model(**tokenized_rewards)
+            rewards = reward_outputs.logits.squeeze(-1).cpu().tolist()  # Flat list of scalars
         
+        # PPO optimization step
         stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
         ppo_trainer.log_stats(stats, batch, rewards)
 
     # --- 5. Save the Final Model ---
-    ppo_trainer.save_model(config.PPO_MODEL_PATH)
+    policy_model.save_pretrained(config.PPO_MODEL_PATH)
     print(f"--- ✅ PPO Stage Complete. Final model saved to {config.PPO_MODEL_PATH} ---")
-
 
 if __name__ == '__main__':
     # 🚀 Execute the full RLHF pipeline
     
     # Stage 1: Supervised Fine-Tuning
-    # This teaches the model the desired response format.
     run_sft()
     
     # Stage 2: Reward Modeling
-    # This trains a "judge" to score the model's responses.
     run_reward_modeling()
     
     # Stage 3: Proximal Policy Optimization
-    # This uses the "judge" to refine the SFT model.
     run_ppo()
 
-    print("\n🎉🎉🎉 RLHF Pipeline Complete! 🎉🎉🎉")
+    print("\n🎉🎉🎉 RLHF Pipeline Complete! 🎉🎉🎉 Test your PPO model now!")
