@@ -14,6 +14,9 @@ from trl import SFTTrainer, RewardTrainer, PPOConfig, PPOTrainer, AutoModelForCa
 from tqdm import tqdm
 import numpy as np
 
+# Anti-OOM env (set at top for safety)
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 # Load environment variables for secure token management
 load_dotenv()
 
@@ -21,7 +24,7 @@ class ScriptConfig:
     """Centralized configuration for the entire pipeline."""
     # --- Model & Tokenizer ---
     BASE_MODEL_ID = "meta-llama/Meta-Llama-3.1-8B-Instruct"
-    MAX_SEQ_LENGTH = 1024
+    MAX_SEQ_LENGTH = 512  # Shorter for VRAM efficiency (reviews fit)
 
     # --- Datasets ---
     SFT_DATASET_ID = "amazon_polarity"
@@ -70,15 +73,14 @@ def run_sft():
 
     # --- 2. Load and Prepare Dataset ---
     full_train = load_dataset(config.SFT_DATASET_ID, split="train")
-    train_dataset = full_train.select(range(int(len(full_train) * 0.005)))  # ~0.5% for dev
-    print(f"Training samples: {len(train_dataset)}")  # Quick sanity check
+    train_dataset = full_train.select(range(int(len(full_train) * 0.01)))  # ~1% for dev (~18k)
+    print(f"Training samples: {len(train_dataset)}")
 
     full_eval = load_dataset(config.SFT_DATASET_ID, split="test")
-    eval_dataset = full_eval.select(range(int(len(full_eval) * 0.005)))
+    eval_dataset = full_eval.select(range(int(len(full_eval) * 0.01)))  # ~1% (~2k)
     print(f"Eval samples: {len(eval_dataset)}")
 
-# NEW Function (handles batches for speed):
-    def format_review(examples):  # Note: plural 'examples'
+    def format_review(examples):
         texts = []
         for label, content in zip(examples['label'], examples['content']):
             sentiment = "Positive" if label == 1 else "Negative"
@@ -93,19 +95,19 @@ def run_sft():
             texts, 
             truncation=True, 
             max_length=config.MAX_SEQ_LENGTH,
-            padding="max_length"  # Uniform padding
+            padding="max_length"  # <-- KEY CHANGE: Uniform lengths; collator chills
         )
         
-        tokenized["labels"] = [ids[:] for ids in tokenized["input_ids"]]  # Deep copy for lists
+        tokenized["labels"] = tokenized["input_ids"].copy()  # Shallow copy fine now (uniform)
+        tokenized["attention_mask"] = tokenized["attention_mask"].copy()  # Ensure mask too
         return tokenized
 
-    # Update map calls (add batched=True for ~10x speed):
     formatted_train_dataset = train_dataset.map(
         format_review, 
         remove_columns=train_dataset.column_names,
         desc="Formatting train dataset",
-        batched=True,  # <-- Batch magic (default batch_size=1000)
-        batch_size=1000  # Tune if memory tight
+        batched=True,
+        batch_size=1000
     )
     formatted_eval_dataset = eval_dataset.map(
         format_review, 
@@ -126,9 +128,10 @@ def run_sft():
 
     training_args = TrainingArguments(
         output_dir=config.SFT_ADAPTER_PATH,
-        num_train_epochs=3,  # Shorter for dev; bump to 5 later
-        per_device_train_batch_size=16,  # Safer memory
-        gradient_accumulation_steps=2,
+        num_train_epochs=3,
+        per_device_train_batch_size=4,  # Smaller for VRAM
+        per_device_eval_batch_size=8,
+        gradient_accumulation_steps=4,  # Effective batch=16
         optim="paged_adamw_32bit",
         learning_rate=2e-4,
         lr_scheduler_type="cosine",
@@ -141,14 +144,13 @@ def run_sft():
         greater_is_better=False,
         save_total_limit=2,
         remove_unused_columns=False,
-        push_to_hub=False  # <-- ADD THIS: Disables Hub, skips token pop drama
+        push_to_hub=False  # Bypasses token drama
     )
-
-    # Remove the "Training args ready" print and push_to_hub_token=None line (no longer needed)
-    # Keep collator & trainer clean (no extra kwargs)
+    
     data_collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer,
-        mlm=False
+        mlm=False,
+        pad_to_multiple_of=8  # bf16 alignment
     )
 
     trainer = SFTTrainer(
@@ -242,7 +244,8 @@ def run_reward_modeling():
         load_best_model_at_end=True,
         metric_for_best_model="preference_accuracy",
         greater_is_better=True,
-        save_total_limit=1
+        save_total_limit=1,
+        push_to_hub=False
     )
     
     trainer = RewardTrainer(
