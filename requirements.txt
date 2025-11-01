@@ -1,18 +1,26 @@
-# Hugging Face ecosystem
-# Pinning versions ensures that your code will not break with future updates.
-transformers==4.42.4
-trl==0.9.4
-peft==0.11.1
-datasets==2.20.0
-accelerate==0.31.0
-huggingface-hub==0.23.4
+# --- Core Deep Learning & CUDA ---
+# Note: Ensure your NVIDIA drivers support CUDA 12.1.
+# If you have a different CUDA version (e.g., 11.8), change "+cu121" to "+cu118".
+torch==2.5.1+cu121
+torchaudio==2.5.1+cu121
+torchvision==0.20.1+cu121
 
-# Model quantization
+# --- Hugging Face Ecosystem ---
+# Upgraded to versions compatible with Llama 3.1's configuration.
+transformers==4.41.2
+accelerate==0.30.1
+datasets==2.19.1
+trl==0.8.6
+peft==0.11.1
+
+# --- Quantization & Optimization ---
 bitsandbytes==0.43.1
 
-# Utilities and dependencies
-python-dotenv==1.0.1
+# --- Utilities ---
 numpy==1.26.4
 tqdm==4.66.4
+python-dotenv==1.0.1
+einops==0.8.0
+scipy==1.13.1
 sentencepiece==0.2.0
-protobuf==3.20.3
+protobuf==4.25.3
