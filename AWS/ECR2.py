@@ -24,25 +24,6 @@ ec2 = boto3.client('ec2', region_name='ap-southeast-2')
 print("Checking existing EC2 instances...")
 print(ec2.describe_instances())
 
-# ============================================================
-# 2️⃣  CREATE A KEY PAIR FOR SSH ACCESS
-# ============================================================
-# A key pair allows you to securely connect to your instance via SSH.
-# The private key (.pem) is saved locally; AWS stores only the public key.
-# DO NOT upload this file to GitHub or share it publicly.
-print("\nCreating new key pair: TestLinux")
-
-response = ec2.create_key_pair(KeyName='TestLinux')
-
-# Create a directory to store credentials if it doesn't exist
-os.makedirs("Cred", exist_ok=True)
-
-# Save the private key to a local PEM file
-with open("Cred/TestLinux.pem", "w") as file:
-    file.write(response['KeyMaterial'])
-
-print("Key pair created and saved to Cred/TestLinux.pem")
-print("Remember to set permissions: chmod 400 Cred/TestLinux.pem\n")
 
 # ============================================================
 # 3️⃣  CREATE A SECURITY GROUP
@@ -87,7 +68,7 @@ response = ec2.run_instances(
     InstanceType='t3.small',
     MinCount=1,
     MaxCount=1,
-    KeyName='TestLinux',
+    KeyName='FastAPITutorial',
     BlockDeviceMappings=[
         {
             "DeviceName": "/dev/xvda",
