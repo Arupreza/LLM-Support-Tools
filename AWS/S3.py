@@ -22,23 +22,42 @@ REGION = 'ap-southeast-2'
 s3_client = boto3.client('s3')
 s3_resource = boto3.resource('s3')
 
+def list_of_buckets():
+    try:
+        response = s3_client.list_buckets()
+        buckets = [bucket['Name'] for bucket in response.get('Buckets', [])]
+        print("Existing buckets:", buckets)
+        return buckets
+    except ClientError as e:
+        print(f"Error listing buckets: {e}")
+        return []
+# ===========================================================
+# create_bucket('Arupreza-uids-models', 'ap-southeast-2')
 
 # ===========================================================
-def create_bucket(bucket_name, region=REGION):
-    # Creates a new S3 bucket in the specified AWS region.
+def create_bucket(bucket_name, region='ap-southeast-2'):
+    s3_client = boto3.client('s3', region_name=region)
+    bucket_name = bucket_name.lower()
+    
     try:
-        response = s3_client.create_bucket(
-            Bucket=bucket_name,
-            CreateBucketConfiguration={
-                'LocationConstraint': region
-            }
-        )
-        print(f"Bucket '{bucket_name}' created successfully")
-        return response
+        # Define config only if NOT in us-east-1
+        config = {'LocationConstraint': region} if region != 'us-east-1' else None
+        
+        if config:
+            s3_client.create_bucket(Bucket=bucket_name, CreateBucketConfiguration=config)
+        else:
+            s3_client.create_bucket(Bucket=bucket_name)
+            
+        print(f"Bucket '{bucket_name}' created successfully.")
+        
     except ClientError as e:
-        print("AWS Error:", e.response['Error']['Message'])
-    except Exception as e:
-        print("Unexpected error:", e)
+        error_code = e.response['Error']['Code']
+        if error_code == 'BucketAlreadyOwnedByYou':
+            print(f"Cleanup: You already own '{bucket_name}'. Proceeding...")
+        elif error_code == 'BucketAlreadyExists':
+            print(f"Error: Name '{bucket_name}' is globally taken by someone else.")
+        else:
+            print(f"Critical Permission/Network Error: {e}")
 
 # -----------------------------------------------------------
 # Explanation and Use
@@ -179,7 +198,8 @@ def upload_dir(dir_path, bucket_name=BUCKET_NAME, s3_prefix=""):
 #
 # Example:
 #
-# upload_dir("./Downloaded", s3_prefix="backups/project_v1")
+# Pass your valid bucket name as the second argument
+# upload_dir(traget_dir, bucket_name="arupreza-uids-models", s3_prefix="ONNXModels")
 #
 # Practical uses:
 # - backup folders
@@ -294,6 +314,38 @@ def empty_s3_bucket(bucket_name):
 # This is mandatory before deleting a bucket.
 # -----------------------------------------------------------
 
+def delete_s3_directory(bucket_name, directory_prefix):
+    # 1. Initialize inside the function to ensure fresh session
+    s3_res = boto3.resource('s3')
+    
+    # 2. Strict prefix handling
+    if not directory_prefix.endswith('/'):
+        directory_prefix += '/'
+    
+    try:
+        bucket = s3_res.Bucket(bucket_name)
+        
+        # 3. Use a collection to track what is being removed
+        # Filter all versions (essential if versioning was ever on)
+        versions = bucket.object_versions.filter(Prefix=directory_prefix)
+        
+        count = 0
+        for version in versions:
+            version.delete()
+            count += 1
+            
+        if count == 0:
+            print(f"No objects found with prefix '{directory_prefix}'. Check your path spelling.")
+        else:
+            print(f"Successfully deleted {count} object versions from '{directory_prefix}'.")
+            
+    except ClientError as e:
+        print(f"AWS Error: {e.response['Error']['Message']}")
+    except Exception as e:
+        print(f"Error: {e}")
+
+# IMPORTANT: Check your exact bucket name and prefix
+# delete_s3_directory('arupreza-uids-models', 'ONNXModels/')
 
 # ===========================================================
 def delete_entire_s3_bucket(bucket_name):
