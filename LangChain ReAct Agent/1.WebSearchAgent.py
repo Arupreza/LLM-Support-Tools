@@ -20,12 +20,10 @@ This file is intentionally verbose and educational.
 # Used for typing structured lists in Pydantic models
 from typing import List
 
-# Pydantic is used to strictly define the agent's output schema
-from pydantic import BaseModel, Field
-
 # Used to load API keys from a .env file
 from dotenv import load_dotenv
-
+# Pydantic is used to strictly define the agent's output schema
+from pydantic import BaseModel, Field
 
 # ------------------------------------------------------
 # 2. Load Environment Variables
@@ -49,23 +47,19 @@ os.environ["LANGCHAIN_PROJECT"] = "agent-tutorial"
 
 # Factory function to create a reasoning + tool-using agent
 from langchain.agents import create_agent
-
 # Base class for defining custom tools (not used yet, but imported for extensibility)
 from langchain.tools import tool
-
 # Standard message format expected by LangChain agents
 from langchain_core.messages import HumanMessage
-
 # OpenAI chat-based LLM wrapper
 from langchain_openai import ChatOpenAI
-
 # Tavily web search tool (used for real-time internet search)
 from langchain_tavily import TavilySearch
-
 
 # ------------------------------------------------------
 # 4. Define Output Schemas (Critical for Reliability)
 # ------------------------------------------------------
+
 
 class Source(BaseModel):
     """
@@ -76,9 +70,8 @@ class Source(BaseModel):
     - Makes sources machine-readable
     - Useful for downstream UI or logging
     """
-    url: str = Field(
-        description="The URL of the source"
-    )
+
+    url: str = Field(description="The URL of the source")
 
 
 class AgentResponse(BaseModel):
@@ -89,13 +82,11 @@ class AgentResponse(BaseModel):
     - answer: Natural language response
     - sources: List of URLs backing the answer
     """
-    answer: str = Field(
-        description="The agent's answer to the query"
-    )
+
+    answer: str = Field(description="The agent's answer to the query")
 
     sources: List[Source] = Field(
-        default_factory=list,
-        description="List of sources used to generate the answer"
+        default_factory=list, description="List of sources used to generate the answer"
     )
 
 
@@ -105,9 +96,7 @@ class AgentResponse(BaseModel):
 
 # ChatOpenAI is a wrapper around OpenAI's chat completion API
 # gpt-3.5-turbo is chosen for cost efficiency and fast iteration
-llm = ChatOpenAI(
-    model="gpt-3.5-turbo"
-)
+llm = ChatOpenAI(model="gpt-3.5-turbo")
 
 # ------------------------------------------------------
 # 6. Define Available Tools
@@ -117,9 +106,7 @@ llm = ChatOpenAI(
 # - Search the web
 # - Retrieve fresh, real-world information
 # - Provide source URLs
-tools = [
-    TavilySearch()
-]
+tools = [TavilySearch()]
 
 
 # ------------------------------------------------------
@@ -134,16 +121,13 @@ tools = [
 # This ensures:
 # - Tool usage is automatic
 # - Output is always structured
-agent = create_agent(
-    model=llm,
-    tools=tools,
-    response_format=AgentResponse
-)
+agent = create_agent(model=llm, tools=tools, response_format=AgentResponse)
 
 
 # ------------------------------------------------------
 # 8. Main Execution Function
 # ------------------------------------------------------
+
 
 def main():
     """
@@ -166,11 +150,7 @@ def main():
     # - Reasoning
     # - Tool usage (TavilySearch)
     # - Structured response generation
-    result = agent.invoke(
-        {
-            "messages": query
-        }
-    )
+    result = agent.invoke({"messages": query})
 
     # The result is already validated against AgentResponse
     print(result)

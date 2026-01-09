@@ -1,12 +1,12 @@
 from dotenv import load_dotenv
 from langchain_core.prompts import PromptTemplate
-from langchain_openai import ChatOpenAI
 from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 
 load_dotenv()
 
-def main():
 
+def main():
     info = """Cell Broadcast System(CBS) is a broadcast mechanism that delivers the same message
     simultaneously to all user equipment (UE) within a target cell area, enabling rapid dissemination
     of emergency information regardless of network congestion. Recently, Advances in software-defined
@@ -27,20 +27,15 @@ def main():
         2) Two interesting points
         """
 
-    summary_prompt = PromptTemplate(
-        input_variables=["info"],
-        template=summary_template
-    )
+    summary_prompt = PromptTemplate(input_variables=["info"], template=summary_template)
 
-    llm = ChatOllama(
-        temperature=0.7,
-        model="llama3.1:8b"
-    )
+    llm = ChatOllama(temperature=0.7, model="llama3.1:8b")
 
     chain = summary_prompt | llm
     response = chain.invoke({"info": info})
 
     print(response.content)
+
 
 if __name__ == "__main__":
     main()
